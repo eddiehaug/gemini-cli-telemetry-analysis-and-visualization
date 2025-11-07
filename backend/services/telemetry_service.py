@@ -17,7 +17,9 @@ GEMINI_SETTINGS_PATH = Path.home() / ".gemini" / "settings.json"
 async def configure_telemetry(
     log_prompts: bool,
     inference_project_id: str,
-    telemetry_project_id: str
+    telemetry_project_id: str,
+    auth_method: str = "oauth",
+    gemini_region: str = None
 ) -> Dict:
     """
     Configure Gemini CLI telemetry settings by editing settings.json and shell profile.
@@ -26,12 +28,18 @@ async def configure_telemetry(
         log_prompts: Whether to log prompts and responses
         inference_project_id: GCP project ID for Gemini API inference
         telemetry_project_id: GCP project ID for telemetry data collection
+        auth_method: Authentication method ('oauth' or 'vertex-ai')
+        gemini_region: Region for Gemini API calls (required for Vertex AI)
 
     Returns:
         Dict with configuration status
     """
     try:
-        logger.info(f"Configuring Gemini CLI telemetry (log_prompts={log_prompts}, inference={inference_project_id}, telemetry={telemetry_project_id})...")
+        # Validate Vertex AI requires region
+        if auth_method == "vertex-ai" and not gemini_region:
+            raise ValueError("Gemini region is required for Vertex AI authentication")
+
+        logger.info(f"Configuring Gemini CLI telemetry (log_prompts={log_prompts}, inference={inference_project_id}, telemetry={telemetry_project_id}, auth={auth_method}, region={gemini_region})...")
 
         # Step 1: Read current settings
         settings = await read_gemini_settings()
@@ -51,7 +59,9 @@ async def configure_telemetry(
         await configure_environment_variables_in_settings(
             settings,
             inference_project_id,
-            telemetry_project_id
+            telemetry_project_id,
+            auth_method,
+            gemini_region
         )
 
         # Step 4: Write updated settings back
@@ -60,7 +70,9 @@ async def configure_telemetry(
         # Step 5: Configure environment variables in shell profile
         shell_result = await configure_environment_variables_in_shell(
             inference_project_id,
-            telemetry_project_id
+            telemetry_project_id,
+            auth_method,
+            gemini_region
         )
 
         logger.info("Telemetry configured successfully")
@@ -80,7 +92,9 @@ async def configure_telemetry(
 async def configure_environment_variables_in_settings(
     settings: Dict,
     inference_project_id: str,
-    telemetry_project_id: str
+    telemetry_project_id: str,
+    auth_method: str = "oauth",
+    gemini_region: str = None
 ) -> None:
     """
     Configure environment variables in settings.json.
@@ -89,6 +103,8 @@ async def configure_environment_variables_in_settings(
         settings: Current settings dictionary (modified in place)
         inference_project_id: GCP project ID for Gemini API inference (can be None/empty for same-project setup)
         telemetry_project_id: GCP project ID for telemetry data collection
+        auth_method: Authentication method ('oauth' or 'vertex-ai')
+        gemini_region: Region for Gemini API calls (required for Vertex AI headless mode)
     """
     try:
         if "env" not in settings:
@@ -112,6 +128,14 @@ async def configure_environment_variables_in_settings(
             settings["env"]["OTLP_GOOGLE_CLOUD_PROJECT"] = telemetry_project_id
             logger.info(f"Using different projects - inference: {inference_project_id}, telemetry: {telemetry_project_id}")
 
+        # CRITICAL: For Vertex AI, set GOOGLE_CLOUD_LOCATION (required for headless mode)
+        if auth_method == "vertex-ai" and gemini_region:
+            settings["env"]["GOOGLE_CLOUD_LOCATION"] = gemini_region
+            logger.info(f"Set GOOGLE_CLOUD_LOCATION={gemini_region} for Vertex AI headless mode")
+        else:
+            # Remove GOOGLE_CLOUD_LOCATION if switching from Vertex AI to OAuth
+            settings["env"].pop("GOOGLE_CLOUD_LOCATION", None)
+
     except Exception as e:
         logger.error(f"Failed to configure environment variables in settings: {str(e)}")
         raise
@@ -119,7 +143,9 @@ async def configure_environment_variables_in_settings(
 
 async def configure_environment_variables_in_shell(
     inference_project_id: str,
-    telemetry_project_id: str
+    telemetry_project_id: str,
+    auth_method: str = "oauth",
+    gemini_region: str = None
 ) -> Dict:
     """
     Configure environment variables in shell profile (~/.bashrc, ~/.zshrc, ~/.bash_profile).
@@ -127,6 +153,8 @@ async def configure_environment_variables_in_shell(
     Args:
         inference_project_id: GCP project ID for Gemini API inference
         telemetry_project_id: GCP project ID for telemetry data collection
+        auth_method: Authentication method ('oauth' or 'vertex-ai')
+        gemini_region: Region for Gemini API calls (required for Vertex AI headless mode)
 
     Returns:
         Dict with shell configuration status
@@ -169,6 +197,10 @@ async def configure_environment_variables_in_shell(
             # Different projects: both variables
             export_lines.append(f'export GOOGLE_CLOUD_PROJECT="{inference_project_id}"')
             export_lines.append(f'export OTLP_GOOGLE_CLOUD_PROJECT="{telemetry_project_id}"')
+
+        # CRITICAL: For Vertex AI, add GOOGLE_CLOUD_LOCATION (required for headless mode)
+        if auth_method == "vertex-ai" and gemini_region:
+            export_lines.append(f'export GOOGLE_CLOUD_LOCATION="{gemini_region}"')
 
         # Step 4: Read existing profile content
         if profile_file.exists():

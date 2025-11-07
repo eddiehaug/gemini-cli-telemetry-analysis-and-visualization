@@ -7,6 +7,8 @@ import type {
   PermissionCheck,
   ApiEnablement,
   BootstrapResult,
+  AuthStatusResult,
+  OAuthFlowResult,
 } from '../types';
 
 const api = axios.create({
@@ -18,6 +20,18 @@ const api = axios.create({
 
 // Deployment steps
 export const deploymentApi = {
+  // NEW: Check authentication status (pre-bootstrap)
+  checkAuthStatus: async (): Promise<ApiResponse<AuthStatusResult>> => {
+    const response = await api.post('/check-auth-status');
+    return response.data;
+  },
+
+  // NEW: Initiate OAuth authentication flow (pre-bootstrap)
+  authenticateWithOAuth: async (): Promise<ApiResponse<OAuthFlowResult>> => {
+    const response = await api.post('/authenticate-with-oauth');
+    return response.data;
+  },
+
   // NEW: Bootstrap endpoint
   bootstrap: async (projectId: string): Promise<ApiResponse<BootstrapResult>> => {
     const response = await api.post('/bootstrap', { projectId });
@@ -64,12 +78,16 @@ export const deploymentApi = {
   configureTelemetry: async (
     logPrompts: boolean,
     geminiCliProjectId: string,
-    telemetryProjectId: string
+    telemetryProjectId: string,
+    authMethod: string,
+    geminiRegion: string | null
   ): Promise<ApiResponse> => {
     const response = await api.post('/configure-telemetry', {
       logPrompts,
       geminiCliProjectId,
-      telemetryProjectId
+      telemetryProjectId,
+      geminiAuthMethod: authMethod,
+      geminiRegion: authMethod === 'vertex-ai' ? geminiRegion : null
     });
     return response.data;
   },

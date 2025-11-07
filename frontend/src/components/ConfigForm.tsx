@@ -88,6 +88,14 @@ export default function ConfigForm({ initialConfig, onSubmit, disabled = false, 
     fetchNetworksAndSubnets();
   }, [telemetryProjectId, config.region, disabled]);
 
+  // Auto-sync geminiRegion with deployment region when region changes
+  useEffect(() => {
+    if (config.region && !config.geminiRegion) {
+      // Auto-fill geminiRegion with deployment region if not already set
+      updateConfig('geminiRegion', config.region);
+    }
+  }, [config.region]);
+
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {};
 
@@ -250,28 +258,6 @@ export default function ConfigForm({ initialConfig, onSubmit, disabled = false, 
                 Project where Gemini CLI will run and incur API costs
               </p>
             </div>
-
-            {/* OAuth Button */}
-            {onGeminiOAuth && (
-              <div>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    await onGeminiOAuth();
-                    setGeminiAuthStatus('Authenticated');
-                  }}
-                  disabled={disabled || !config.geminiCliProjectId}
-                  className="px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg transition-colors"
-                >
-                  Authenticate with Gemini CLI Project
-                </button>
-                {geminiAuthStatus && (
-                  <p className="text-sm text-green-400 mt-2">
-                    ✓ {geminiAuthStatus}
-                  </p>
-                )}
-              </div>
-            )}
           </div>
         )}
 
@@ -365,6 +351,127 @@ export default function ConfigForm({ initialConfig, onSubmit, disabled = false, 
             Choose a region close to your location for better performance. 🌱 indicates low CO2 regions.
           </p>
         </div>
+
+        {/* Gemini CLI Authentication Method - Only show after region selected */}
+        {config.region && (
+          <div className="border border-slate-600 rounded-lg p-4 bg-slate-800/50">
+            <label className="block text-sm font-medium text-slate-300 mb-3">
+              Gemini CLI Authentication Method *
+            </label>
+
+            {/* OAuth Radio Button */}
+            <div className="mb-3">
+              <label className="flex items-center cursor-pointer">
+                <input
+                  type="radio"
+                  name="geminiAuthMethod"
+                  value="oauth"
+                  checked={config.geminiAuthMethod === 'oauth'}
+                  onChange={(e) => updateConfig('geminiAuthMethod', e.target.value)}
+                  className="w-4 h-4 text-primary bg-slate-900 border-slate-600 focus:ring-primary focus:ring-2"
+                />
+                <span className="ml-2 text-sm text-slate-200 font-medium">OAuth (Recommended)</span>
+              </label>
+              <p className="ml-6 text-xs text-slate-400 mt-1">
+                Browser-based authentication with Google. Uses Application Default Credentials.
+              </p>
+            </div>
+
+            {/* Vertex AI Radio Button */}
+            <div className="mb-3">
+              <label className="flex items-center cursor-pointer">
+                <input
+                  type="radio"
+                  name="geminiAuthMethod"
+                  value="vertex-ai"
+                  checked={config.geminiAuthMethod === 'vertex-ai'}
+                  onChange={(e) => updateConfig('geminiAuthMethod', e.target.value)}
+                  className="w-4 h-4 text-primary bg-slate-900 border-slate-600 focus:ring-primary focus:ring-2"
+                />
+                <span className="ml-2 text-sm text-slate-200 font-medium">Vertex AI</span>
+              </label>
+              <p className="ml-6 text-xs text-slate-400 mt-1">
+                Uses Google Cloud Application Default Credentials (ADC) with Vertex AI API.
+              </p>
+            </div>
+
+            {/* OAuth Authentication Button - Required for OAuth mode */}
+            {config.geminiAuthMethod === 'oauth' && (
+              <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+                <p className="text-xs text-blue-300 mb-2">
+                  {config.useSameProjectForGemini
+                    ? 'OAuth authentication requires Application Default Credentials (ADC) for Gemini CLI.'
+                    : 'Cross-project setup requires separate authentication for Gemini CLI project.'}
+                </p>
+                {onGeminiOAuth && (
+                  <button
+                    type="button"
+                    onClick={onGeminiOAuth}
+                    disabled={!config.useSameProjectForGemini && !config.geminiCliProjectId}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                    </svg>
+                    {config.useSameProjectForGemini
+                      ? 'Create Application Default Credentials'
+                      : 'Authenticate Gemini CLI Project'}
+                  </button>
+                )}
+                {geminiAuthStatus && (
+                  <p className="mt-2 text-xs text-green-400">
+                    ✓ {geminiAuthStatus}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Vertex AI Region Selection */}
+            {config.geminiAuthMethod === 'vertex-ai' && (
+              <div className="mt-4">
+                <label htmlFor="geminiRegion" className="block text-sm font-medium text-slate-300 mb-2">
+                  Gemini API Region *
+                </label>
+                <select
+                  id="geminiRegion"
+                  value={config.geminiRegion}
+                  onChange={(e) => updateConfig('geminiRegion', e.target.value)}
+                  className="w-full px-4 py-2 bg-slate-900 border border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="us-central1">us-central1 (Iowa)</option>
+                  <option value="us-east1">us-east1 (South Carolina)</option>
+                  <option value="us-east4">us-east4 (Northern Virginia)</option>
+                  <option value="us-west1">us-west1 (Oregon)</option>
+                  <option value="us-west2">us-west2 (Los Angeles)</option>
+                  <option value="us-west4">us-west4 (Las Vegas)</option>
+                  <option value="europe-west1">europe-west1 (Belgium)</option>
+                  <option value="europe-west2">europe-west2 (London)</option>
+                  <option value="europe-west3">europe-west3 (Frankfurt)</option>
+                  <option value="europe-west4">europe-west4 (Netherlands)</option>
+                  <option value="asia-northeast1">asia-northeast1 (Tokyo)</option>
+                  <option value="asia-northeast3">asia-northeast3 (Seoul)</option>
+                  <option value="asia-southeast1">asia-southeast1 (Singapore)</option>
+                </select>
+                <p className="mt-1 text-xs text-slate-400">
+                  Region for Gemini API calls. Can differ from deployment infrastructure region.
+                </p>
+
+                {/* Status indicator */}
+                <div className="mt-3 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
+                  <p className="text-xs text-green-300">
+                    ✓ Will use Vertex AI with Application Default Credentials
+                  </p>
+                  <p className="text-xs text-green-300 mt-1">
+                    ✓ Region: {config.geminiRegion}
+                  </p>
+                  <p className="text-xs text-green-300 mt-1">
+                    ✓ Project: {config.geminiCliProjectId || config.telemetryProjectId}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* VPC Network */}
         <div>

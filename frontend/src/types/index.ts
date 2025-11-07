@@ -9,6 +9,8 @@ export interface DeploymentConfig {
   pseudoanonymizePii: boolean;
   network: string;
   subnetwork: string;
+  geminiAuthMethod: 'oauth' | 'vertex-ai';  // Gemini CLI authentication method
+  geminiRegion: string;                      // Region for Gemini API calls (separate from deployment region)
 }
 
 // Deployment step status
@@ -68,14 +70,26 @@ export interface DeploymentState {
   };
 }
 
+// Authentication status result (NEW)
+export interface AuthStatusResult {
+  gcloud_installed: boolean;
+  authenticated: boolean;
+  account: string | null;
+  has_adc: boolean;
+}
+
+// OAuth flow result (NEW)
+export interface OAuthFlowResult {
+  auth_url: string;
+  message: string;
+}
+
 // Bootstrap result type
 export interface BootstrapResult {
   dependencies: DependencyCheck[];
-  auth: {
-    authenticated: boolean;
-    account: string;
-    method: string;
-  };
+  account: string;  // Active gcloud account
+  telemetry_config_name: string;
+  telemetry_config_status: string;
   compute_api_enabled: boolean;
   apis_enabled: {
     enabled: string[];

@@ -106,18 +106,153 @@ async def get_active_account() -> str:
         raise
 
 
+async def check_auth_status() -> Dict:
+    """
+    Check gcloud CLI installation and authentication status (non-blocking).
+
+    This function checks if:
+    1. gcloud CLI is installed
+    2. User is authenticated with gcloud
+
+    Unlike authenticate(), this does NOT raise exceptions if not authenticated.
+    It simply returns the current status.
+
+    Returns:
+        Dict with:
+        - gcloud_installed: bool
+        - authenticated: bool
+        - account: str | None
+        - has_adc: bool (application default credentials exist)
+    """
+    result = {
+        "gcloud_installed": False,
+        "authenticated": False,
+        "account": None,
+        "has_adc": False
+    }
+
+    try:
+        # Check if gcloud is installed by running gcloud version
+        version_check = subprocess.run(
+            ["gcloud", "version"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if version_check.returncode == 0:
+            result["gcloud_installed"] = True
+            logger.info("gcloud CLI is installed")
+        else:
+            logger.warning("gcloud CLI is not installed")
+            return result
+
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        logger.warning("gcloud CLI not found or check timed out")
+        return result
+
+    # If gcloud is installed, check authentication
+    try:
+        auth_check = subprocess.run(
+            ["gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if auth_check.returncode == 0 and auth_check.stdout.strip():
+            account = auth_check.stdout.strip().split('\n')[0]
+            result["authenticated"] = True
+            result["account"] = account
+            logger.info(f"User authenticated as: {account}")
+        else:
+            logger.info("User not authenticated with gcloud")
+
+    except subprocess.TimeoutExpired:
+        logger.warning("Auth check timed out")
+
+    # Check for application default credentials
+    try:
+        adc_path = os.path.expanduser("~/.config/gcloud/application_default_credentials.json")
+        result["has_adc"] = os.path.exists(adc_path)
+        if result["has_adc"]:
+            logger.info("Application default credentials found")
+        else:
+            logger.info("Application default credentials not found")
+    except Exception as e:
+        logger.warning(f"Could not check ADC: {str(e)}")
+
+    return result
+
+
+async def initiate_oauth_flow() -> Dict:
+    """
+    Initiate OAuth authentication flow and return the auth URL.
+
+    This starts the OAuth flow with --no-launch-browser to get the URL
+    that the frontend can open in a new tab.
+
+    Returns:
+        Dict with:
+        - auth_url: str (URL for user to visit)
+        - message: str (instructions for user)
+
+    Raises:
+        Exception if OAuth initiation fails
+    """
+    try:
+        logger.info("Initiating OAuth flow (no-launch-browser mode)")
+
+        # Run gcloud auth login with --no-launch-browser to get URL
+        result = subprocess.run(
+            ["gcloud", "auth", "login", "--no-launch-browser"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            input="\n"  # Send newline to prevent hanging
+        )
+
+        # Extract URL from output (check both stdout and stderr)
+        # Format: "Go to the following link in your browser: https://..."
+        import re
+        combined_output = result.stdout + "\n" + result.stderr
+
+        # Try to match the OAuth URL - look for the complete URL on its own line
+        url_match = re.search(r'https://accounts\.google\.com/o/oauth2/[^\s\n]+', combined_output)
+
+        if url_match:
+            auth_url = url_match.group(0)
+            logger.info("OAuth URL generated successfully")
+
+            return {
+                "auth_url": auth_url,
+                "message": "Please complete authentication in the browser window that will open."
+            }
+        else:
+            logger.error(f"Could not extract OAuth URL from gcloud output. Output: {combined_output[:500]}")
+            raise Exception("Failed to generate OAuth URL")
+
+    except subprocess.TimeoutExpired:
+        logger.error("OAuth initiation timed out")
+        raise Exception("OAuth initiation timed out")
+    except Exception as e:
+        logger.error(f"Failed to initiate OAuth: {str(e)}")
+        raise
+
+
 async def authenticate_oauth_flow(project_id: str) -> Dict:
     """
-    Authenticate with a specific project using OAuth browser flow.
+    Authenticate with a specific project using OAuth browser flow to create ADC.
 
-    This is used when the Gemini CLI project is different from the
-    telemetry project and needs separate authentication.
+    This creates Application Default Credentials (ADC) required for Gemini CLI
+    OAuth authentication mode. ADC is stored at:
+    ~/.config/gcloud/application_default_credentials.json
 
     Opens browser window for Google Login OAuth flow. Provides manual
     URL as fallback if browser doesn't open automatically.
 
     Args:
-        project_id: GCP project ID to authenticate against
+        project_id: GCP project ID to authenticate against (used for quota attribution)
 
     Returns:
         Dict with auth status, account email, and method
@@ -126,12 +261,13 @@ async def authenticate_oauth_flow(project_id: str) -> Dict:
         Exception if authentication fails or times out
     """
     try:
-        logger.info(f"Starting OAuth flow for project: {project_id}")
+        logger.info(f"Starting ADC OAuth flow for project: {project_id}")
+        logger.info("This will create Application Default Credentials for Gemini CLI OAuth mode")
 
-        # Use gcloud auth login with project-specific context
-        # This will open a browser window automatically
+        # Use gcloud auth application-default login to create ADC
+        # This is required for Gemini CLI OAuth authentication
         result = subprocess.run(
-            ["gcloud", "auth", "login", "--project", project_id, "--brief"],
+            ["gcloud", "auth", "application-default", "login", "--project", project_id, "--quiet"],
             capture_output=True,
             text=True,
             timeout=120  # OAuth flow can take time
@@ -142,9 +278,9 @@ async def authenticate_oauth_flow(project_id: str) -> Dict:
             if "browser" in result.stderr.lower() or "open" in result.stderr.lower():
                 logger.warning("Browser didn't open automatically, providing manual URL...")
 
-                # Get manual auth URL
+                # Get manual auth URL for ADC
                 url_result = subprocess.run(
-                    ["gcloud", "auth", "login", "--project", project_id, "--no-launch-browser"],
+                    ["gcloud", "auth", "application-default", "login", "--project", project_id, "--no-launch-browser"],
                     capture_output=True,
                     text=True,
                     timeout=120
@@ -164,37 +300,23 @@ async def authenticate_oauth_flow(project_id: str) -> Dict:
                         f"3. Click 'Retry Authentication' below"
                     )
 
-            raise Exception(f"OAuth authentication failed: {result.stderr}")
+            raise Exception(f"ADC OAuth authentication failed: {result.stderr}")
 
         # Get the authenticated account
         account = await get_active_account()
 
-        logger.info(f"OAuth authentication successful for account: {account}")
-
-        # Create named gcloud configuration for this project
-        # This allows simultaneous authentication to multiple projects
-        from services import gcloud_config_service
-
-        config_name = gcloud_config_service.get_config_name_for_project(project_id, "gemini-cli")
-        logger.info(f"Creating gcloud configuration for Gemini CLI project: {config_name}")
-
-        config_result = await gcloud_config_service.create_configuration(
-            config_name=config_name,
-            project_id=project_id,
-            account_email=account
-        )
-
-        logger.info(f"✓ Created gcloud configuration: {config_name}")
-        logger.info(f"  Project: {project_id}")
+        logger.info(f"✓ Application Default Credentials created successfully")
         logger.info(f"  Account: {account}")
+        logger.info(f"  Project: {project_id}")
+        logger.info(f"  ADC file: ~/.config/gcloud/application_default_credentials.json")
 
         return {
             "authenticated": True,
             "account": account,
             "project_id": project_id,
-            "method": "oauth",
-            "config_name": config_name,
-            "config_status": config_result.get("status")
+            "method": "oauth_adc",
+            "adc_created": True,
+            "adc_path": "~/.config/gcloud/application_default_credentials.json"
         }
 
     except subprocess.TimeoutExpired:

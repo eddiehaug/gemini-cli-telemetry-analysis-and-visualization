@@ -68,6 +68,9 @@ The wizard deploys and configures:
 - Generates telemetry events during AI interactions
 - Logs structured data to Cloud Logging
 - Configured via `~/.gemini/settings.json`
+- Supports two authentication methods:
+  - **OAuth**: Browser-based authentication (recommended for interactive use)
+  - **Vertex AI**: Application Default Credentials with region configuration (for headless/automation)
 
 #### 2. **Cloud Logging** (Extraction)
 - **Purpose**: Central log aggregation service
@@ -163,6 +166,12 @@ The wizard deploys and configures:
 - Infrastructure deployment (12 steps)
 - End-to-end verification
 
+### Dual Authentication Methods
+- **OAuth** (Recommended): Browser-based authentication using Application Default Credentials
+- **Vertex AI**: Uses existing ADC with Vertex AI API for headless environments
+- Separate authentication for gcloud CLI and Gemini CLI
+- Independent project and region configuration for Gemini API calls
+
 ### Single-Project & Cross-Project Support
 - **Single-Project**: All infrastructure in one GCP project
 - **Cross-Project**: Gemini CLI in one project, telemetry in another
@@ -226,7 +235,10 @@ The app will be available at:
    - Wait for validation (checks dependencies, APIs, VPC)
 4. **Configure** (Step 2):
    - Choose single-project or cross-project setup
-   - Select region (default: us-central1)
+   - Select deployment region (default: us-central1)
+   - Configure Gemini CLI authentication:
+     - **OAuth** (Recommended): Browser-based authentication
+     - **Vertex AI**: Headless mode with ADC (requires region selection)
    - Configure privacy options:
      - **Log Prompts**: Include user prompts in telemetry (default: OFF)
      - **Pseudonymization**: Hash user emails for privacy (default: OFF)
@@ -478,10 +490,10 @@ The wizard executes 17 steps split into 2 phases:
 
 ### Phase 2: Deployment (12 Steps)
 
-6. **Collect Configuration** - Project and dataset settings
+6. **Collect Configuration** - Project, dataset, and authentication settings
 7. **Check Permissions** - Verify IAM roles (90s IAM propagation delay)
 8. **Enable APIs** - Verify all required APIs are accessible
-9. **Configure Telemetry** - Update Gemini CLI settings.json
+9. **Configure Telemetry** - Update Gemini CLI settings.json with authentication method (OAuth or Vertex AI) and environment variables
 10. **Create Dataset & Table** - BigQuery raw table with JSON schema
 11. **Create Analytics View** - Base flattened view for querying
 12. **Create Pub/Sub Resources** - Topic and subscription for ELT
@@ -508,14 +520,45 @@ The wizard executes 17 steps split into 2 phases:
 - Telemetry Project: `my-telemetry-project` (data warehouse)
 - Gemini CLI Project: `my-production-project` (where CLI runs)
 
+### Authentication Methods
+
+The application supports two authentication methods for Gemini CLI:
+
+**OAuth** (Default - Recommended):
+- Browser-based authentication with Google
+- Uses Application Default Credentials (ADC)
+- Works in interactive environments
+- Automatic credential refresh
+- Best for: Development environments, personal use
+
+**Vertex AI**:
+- Uses existing Application Default Credentials
+- Requires `GOOGLE_CLOUD_LOCATION` environment variable
+- Works in headless/non-interactive environments
+- Requires separate region configuration for Gemini API
+- Best for: CI/CD pipelines, server environments, automation
+
+**Configuration Details**:
+- Authentication method selection appears after region configuration
+- For Vertex AI, you must specify the Gemini API region
+- Gemini API region can differ from deployment infrastructure region
+- Settings are written to `~/.gemini/settings.json` and shell profile
+
 ### Region Selection
 
-Choose a region close to your users:
+**Deployment Region**:
+Choose a region close to your users for infrastructure:
 - `us-central1` (Iowa) - Default, lowest cost
 - `us-east1` (South Carolina)
 - `us-west1` (Oregon)
 - `europe-west1` (Belgium)
 - `asia-east1` (Taiwan)
+
+**Gemini API Region** (Vertex AI only):
+Select the region for Gemini API calls:
+- Can be same as deployment region or different
+- Auto-filled with deployment region by default
+- Supported regions: `us-central1`, `us-east1`, `us-west1`, `europe-west1`, `asia-northeast1`, etc.
 
 ### Privacy Options
 
@@ -704,6 +747,25 @@ gcloud projects get-iam-policy YOUR-PROJECT-ID \
 - Is 6-30 characters
 - Starts with lowercase letter
 - Contains only lowercase letters, digits, hyphens
+
+#### 6. Vertex AI authentication fails in headless mode
+
+**Cause**: Missing `GOOGLE_CLOUD_LOCATION` environment variable
+
+**Solution**:
+1. Verify `~/.gemini/settings.json` contains `GOOGLE_CLOUD_LOCATION` in `env` section
+2. Check shell profile (`~/.bashrc` or `~/.zshrc`) has `export GOOGLE_CLOUD_LOCATION="<region>"`
+3. Source your shell profile: `source ~/.bashrc` or `source ~/.zshrc`
+4. Verify environment variable: `echo $GOOGLE_CLOUD_LOCATION`
+
+#### 7. Cross-project OAuth authentication not working
+
+**Cause**: Authentication required for separate Gemini CLI project
+
+**Solution**:
+1. In the Configuration step, click "Authenticate Gemini CLI Project" button
+2. Complete OAuth flow in browser window
+3. Verify authentication successful before continuing deployment
 
 ---
 

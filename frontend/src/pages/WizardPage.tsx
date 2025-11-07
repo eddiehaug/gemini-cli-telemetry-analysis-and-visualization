@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import WizardStepper from '../components/WizardStepper';
 import ConfigForm from '../components/ConfigForm';
@@ -8,7 +8,7 @@ import deploymentApi from '../services/api';
 
 const BOOTSTRAP_STEPS: BootstrapStep[] = [
   { id: '1', name: 'Verify Dependencies', description: 'Check gcloud, gemini, python', status: 'pending' },
-  { id: '2', name: 'Authenticate', description: 'GCP authentication', status: 'pending' },
+  { id: '2', name: 'Create gcloud config', description: 'Configure telemetry project', status: 'pending' },
   { id: '3', name: 'Check Compute API', description: 'Verify Compute Engine enabled', status: 'pending' },
   { id: '4', name: 'Enable Required APIs', description: 'Auto-enable 11 APIs', status: 'pending' },
   { id: '5', name: 'Check VPC Networks', description: 'Verify landing zone configured', status: 'pending' },
@@ -43,6 +43,17 @@ export default function WizardPage() {
   const [currentBootstrapStep, setCurrentBootstrapStep] = useState(0);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [geminiCliAuthenticated, setGeminiCliAuthenticated] = useState(false);
+
+  // NEW: Authentication state
+  const [authStatus, setAuthStatus] = useState<{
+    gcloud_installed: boolean;
+    authenticated: boolean;
+    account: string | null;
+    has_adc: boolean;
+  } | null>(null);
+  const [checkingAuth, setCheckingAuth] = useState(false);
+  const [authenticating, setAuthenticating] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [config, setConfig] = useState<DeploymentConfig>({
     telemetryProjectId: '',
     geminiCliProjectId: '',
@@ -53,6 +64,8 @@ export default function WizardPage() {
     pseudoanonymizePii: false,
     network: 'default',
     subnetwork: 'default',
+    geminiAuthMethod: 'oauth',  // Default to OAuth (recommended)
+    geminiRegion: 'us-central1',  // Default to same as deployment region
   });
   const [steps, setSteps] = useState<DeploymentStep[]>(DEPLOYMENT_STEPS);
   const [currentStep, setCurrentStep] = useState(0);
@@ -71,6 +84,103 @@ export default function WizardPage() {
         ? { ...step, status, details, error }
         : step
     ));
+  };
+
+  // NEW: Auto-check authentication status when project ID is entered
+  useEffect(() => {
+    const checkAuth = async () => {
+      if (!telemetryProjectId || telemetryProjectId.length < 6) {
+        // Don't check if project ID is too short
+        return;
+      }
+
+      setCheckingAuth(true);
+      setAuthError(null);
+
+      try {
+        const result = await deploymentApi.checkAuthStatus();
+
+        if (result.success && result.data) {
+          setAuthStatus(result.data);
+
+          // If already authenticated, we can enable bootstrap
+          if (result.data.authenticated) {
+            console.log('✓ Already authenticated as:', result.data.account);
+          }
+        } else {
+          setAuthError(result.error || 'Failed to check authentication');
+        }
+      } catch (error) {
+        console.error('Auth check error:', error);
+        setAuthError('Failed to check authentication status');
+      } finally {
+        setCheckingAuth(false);
+      }
+    };
+
+    // Debounce the check - wait 500ms after user stops typing
+    const timer = setTimeout(() => {
+      checkAuth();
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [telemetryProjectId]);
+
+  // NEW: Handle OAuth authentication
+  const handleAuthenticate = async () => {
+    setAuthenticating(true);
+    setAuthError(null);
+
+    try {
+      // Step 1: Get OAuth URL from backend
+      const result = await deploymentApi.authenticateWithOAuth();
+
+      if (result.success && result.data) {
+        const authUrl = result.data.auth_url;
+        console.log('Opening OAuth URL:', authUrl);
+
+        // Step 2: Open OAuth URL in new tab
+        const authWindow = window.open(authUrl, '_blank', 'width=600,height=700');
+
+        // Step 3: Poll for completion
+        const pollInterval = setInterval(async () => {
+          try {
+            // Check if window was closed
+            if (authWindow && authWindow.closed) {
+              clearInterval(pollInterval);
+              setAuthenticating(false);
+
+              // Re-check auth status after user completes OAuth
+              const statusResult = await deploymentApi.checkAuthStatus();
+              if (statusResult.success && statusResult.data) {
+                setAuthStatus(statusResult.data);
+
+                if (statusResult.data.authenticated) {
+                  console.log('✓ Authentication successful!');
+                } else {
+                  setAuthError('Authentication was cancelled or failed. Please try again.');
+                }
+              }
+            }
+          } catch (error) {
+            console.error('Error checking window status:', error);
+          }
+        }, 1000); // Check every second
+
+        // Stop polling after 5 minutes
+        setTimeout(() => {
+          clearInterval(pollInterval);
+          setAuthenticating(false);
+        }, 300000);
+      } else {
+        setAuthError(result.error || 'Failed to initiate OAuth flow');
+        setAuthenticating(false);
+      }
+    } catch (error) {
+      console.error('OAuth error:', error);
+      setAuthError('Failed to start authentication');
+      setAuthenticating(false);
+    }
   };
 
   const runBootstrap = async () => {
@@ -317,19 +427,22 @@ export default function WizardPage() {
 
       // Step 6: Configure Telemetry
       setCurrentStep(5);
-      updateStepStatus(5, 'in_progress', 'Configuring Gemini CLI telemetry settings and environment variables...');
+      const authMethodDisplay = deploymentConfig.geminiAuthMethod === 'oauth' ? 'OAuth' : 'Vertex AI';
+      updateStepStatus(5, 'in_progress', `Configuring Gemini CLI telemetry with ${authMethodDisplay} authentication...`);
       const telemetryResult = await deploymentApi.configureTelemetry(
         deploymentConfig.logPrompts,
         deploymentConfig.geminiCliProjectId,
-        deploymentConfig.telemetryProjectId
+        deploymentConfig.telemetryProjectId,
+        deploymentConfig.geminiAuthMethod,
+        deploymentConfig.geminiRegion
       );
       if (!telemetryResult.success) {
         updateStepStatus(5, 'failed', '', telemetryResult.error);
         return;
       }
-      const telemetryMsg = deploymentConfig.logPrompts
-        ? 'Gemini CLI telemetry enabled with prompt logging'
-        : 'Gemini CLI telemetry enabled (prompts not logged)';
+      const promptLoggingStatus = deploymentConfig.logPrompts ? 'with prompt logging' : 'without prompt logging';
+      const regionInfo = deploymentConfig.geminiAuthMethod === 'vertex-ai' ? ` (region: ${deploymentConfig.geminiRegion})` : '';
+      const telemetryMsg = `Gemini CLI telemetry configured: ${authMethodDisplay} ${promptLoggingStatus}${regionInfo}`;
       updateStepStatus(5, 'completed', telemetryMsg);
 
       // Step 7: Create Dataset & Raw Table with JSON String Schema
@@ -681,14 +794,118 @@ export default function WizardPage() {
               </p>
             </div>
 
+            {/* Authentication Status Section (NEW) */}
+            {telemetryProjectId && telemetryProjectId.length >= 6 && (
+              <div className="mb-6 border border-slate-600 rounded-lg p-4 bg-slate-900/50">
+                <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                  <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                  Authentication Status
+                </h3>
+
+                {checkingAuth && (
+                  <div className="flex items-center gap-2 text-sm text-slate-400">
+                    <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Checking authentication status...
+                  </div>
+                )}
+
+                {!checkingAuth && authStatus && (
+                  <div>
+                    {/* gcloud CLI Status */}
+                    <div className="flex items-center gap-2 mb-2">
+                      {authStatus.gcloud_installed ? (
+                        <>
+                          <svg className="w-4 h-4 text-green-400" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                          <span className="text-sm text-green-400">gcloud CLI installed</span>
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-4 h-4 text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                          </svg>
+                          <span className="text-sm text-yellow-400">gcloud CLI not installed (will be installed automatically)</span>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Authentication Status */}
+                    <div className="flex items-center gap-2">
+                      {authStatus.authenticated ? (
+                        <>
+                          <svg className="w-4 h-4 text-green-400" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                          <span className="text-sm text-green-400">
+                            Authenticated as <span className="font-medium">{authStatus.account}</span>
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-4 h-4 text-red-400" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                          </svg>
+                          <span className="text-sm text-red-400">Not authenticated</span>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Authenticate Button */}
+                    {!authStatus.authenticated && (
+                      <button
+                        onClick={handleAuthenticate}
+                        disabled={authenticating}
+                        className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                      >
+                        {authenticating ? (
+                          <>
+                            <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Authenticating...
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                            </svg>
+                            Authenticate with Google
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {authError && (
+                  <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
+                    {authError}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Bootstrap Button */}
             <button
               onClick={runBootstrap}
-              disabled={!telemetryProjectId || bootstrapComplete}
+              disabled={!telemetryProjectId || !authStatus?.authenticated || bootstrapComplete || checkingAuth}
               className="px-6 py-3 bg-primary hover:bg-primary/90 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
             >
               {bootstrapComplete ? '✓ Bootstrap Complete' : 'Bootstrap the Application'}
             </button>
+
+            {!authStatus?.authenticated && telemetryProjectId && telemetryProjectId.length >= 6 && !checkingAuth && (
+              <p className="text-sm text-yellow-400 mt-2">
+                Please authenticate before running bootstrap
+              </p>
+            )}
 
             {/* Bootstrap Error Alert */}
             {bootstrapError && (

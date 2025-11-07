@@ -164,6 +164,16 @@ async def test_gemini_cli_logging(project_id: str, gemini_cli_project_id: Option
             env["CLOUDSDK_ACTIVE_CONFIG_NAME"] = config_name
             logger.info(f"  Using gcloud configuration: {config_name}")
 
+        # CRITICAL: Read GOOGLE_CLOUD_LOCATION from settings.json for Vertex AI headless mode
+        try:
+            from services import telemetry_service
+            gemini_settings = await telemetry_service.read_gemini_settings()
+            if "env" in gemini_settings and "GOOGLE_CLOUD_LOCATION" in gemini_settings["env"]:
+                env["GOOGLE_CLOUD_LOCATION"] = gemini_settings["env"]["GOOGLE_CLOUD_LOCATION"]
+                logger.info(f"  Setting GOOGLE_CLOUD_LOCATION={gemini_settings['env']['GOOGLE_CLOUD_LOCATION']} for Vertex AI headless mode")
+        except Exception as e:
+            logger.warning(f"  Could not read GOOGLE_CLOUD_LOCATION from settings: {str(e)}")
+
         # Record timestamp BEFORE running command (for filtering logs)
         import datetime
         start_datetime = datetime.datetime.utcnow()

@@ -41,6 +41,8 @@ class DeploymentConfig(BaseModel):
     pseudoanonymizePii: bool = Field(False, description="Whether to pseudoanonymize user identifiers")
     network: str = Field("default", description="VPC network name")
     subnetwork: str = Field("default", description="Subnetwork name")
+    geminiAuthMethod: str = Field("oauth", description="Gemini CLI authentication method: oauth or vertex-ai")
+    geminiRegion: str = Field("us-central1", description="Region for Gemini API calls")
 
 
 class ApiResponse(BaseModel):
@@ -113,15 +115,88 @@ async def root():
     return {"status": "ok", "service": "Gemini CLI Telemetry Deployment API"}
 
 
+# Pre-Authentication: Check auth status (NEW)
+@app.post("/api/check-auth-status", response_model=ApiResponse)
+async def check_auth_status():
+    """
+    Check gcloud CLI installation and authentication status.
+
+    This is a non-blocking check that returns current status without
+    raising exceptions.
+
+    Returns:
+        ApiResponse with:
+        - gcloud_installed: bool
+        - authenticated: bool
+        - account: str | None
+        - has_adc: bool
+    """
+    logger.info("Checking authentication status...")
+
+    try:
+        from services import auth_service
+
+        status = await auth_service.check_auth_status()
+
+        logger.info(f"Auth status check complete: gcloud={status['gcloud_installed']}, auth={status['authenticated']}")
+
+        return ApiResponse(
+            success=True,
+            data=status,
+            message="Authentication status retrieved"
+        )
+
+    except Exception as e:
+        logger.error(f"Auth status check failed: {str(e)}")
+        return ApiResponse(success=False, error=str(e))
+
+
+# Pre-Authentication: Initiate OAuth flow (NEW)
+@app.post("/api/authenticate-with-oauth", response_model=ApiResponse)
+async def authenticate_with_oauth():
+    """
+    Initiate OAuth authentication flow and return the auth URL.
+
+    The frontend will open this URL in a new tab for the user to
+    complete authentication.
+
+    Returns:
+        ApiResponse with:
+        - auth_url: str (URL for user to visit)
+        - message: str (instructions)
+    """
+    logger.info("Initiating OAuth authentication flow...")
+
+    try:
+        from services import auth_service
+
+        result = await auth_service.initiate_oauth_flow()
+
+        logger.info("OAuth URL generated successfully")
+
+        return ApiResponse(
+            success=True,
+            data=result,
+            message=result.get("message", "Please authenticate in the browser window")
+        )
+
+    except Exception as e:
+        logger.error(f"OAuth initiation failed: {str(e)}")
+        return ApiResponse(success=False, error=str(e))
+
+
 # Bootstrap: Pre-deployment validation (NEW)
 @app.post("/api/bootstrap", response_model=ApiResponse)
 async def bootstrap(request: dict):
     """
-    Bootstrap the application with 5 validation steps.
+    Bootstrap the application with 4 validation steps.
+
+    PREREQUISITE: User must be authenticated before running bootstrap.
+    This endpoint assumes authentication is already complete.
 
     Steps:
     1. Verify dependencies (gcloud, gemini, python)
-    2. Authenticate (gcloud auth check)
+    2. Create gcloud configuration for telemetry project
     3. Check Compute Engine API (BLOCKING)
     4. Enable required APIs (AUTO-ENABLE 10 APIs)
     5. Check VPC networks (BLOCKING - no default-only)
@@ -136,38 +211,37 @@ async def bootstrap(request: dict):
     logger.info(f"Starting bootstrap for project: {project_id}")
 
     try:
-        from services import dependency_service, auth_service, api_service, network_service
+        from services import dependency_service, auth_service, api_service, network_service, gcloud_config_service
 
         # Step 1: Dependencies
         logger.info("Bootstrap Step 1: Verifying dependencies...")
         deps = await dependency_service.verify_dependencies()
 
-        # Step 2: Authenticate
-        logger.info("Bootstrap Step 2: Authenticating...")
-        auth = await auth_service.authenticate()
+        # Step 2: Get active account (assumes user is already authenticated)
+        logger.info("Bootstrap Step 2: Getting active account...")
+        account = await auth_service.get_active_account()
+        logger.info(f"Using authenticated account: {account}")
 
-        # Step 2b: Create gcloud configuration for telemetry project
-        logger.info("Bootstrap Step 2b: Creating gcloud configuration for telemetry project...")
-        from services import gcloud_config_service
-
+        # Step 3: Create gcloud configuration for telemetry project
+        logger.info("Bootstrap Step 3: Creating gcloud configuration for telemetry project...")
         telemetry_config_name = gcloud_config_service.get_config_name_for_project(project_id, "telemetry")
         telemetry_config = await gcloud_config_service.create_configuration(
             config_name=telemetry_config_name,
             project_id=project_id,
-            account_email=auth.get("account")
+            account_email=account
         )
         logger.info(f"✓ Created telemetry configuration: {telemetry_config_name}")
 
-        # Step 3: Check Compute API (BLOCKING)
-        logger.info("Bootstrap Step 3: Checking Compute Engine API...")
+        # Step 4: Check Compute API (BLOCKING)
+        logger.info("Bootstrap Step 4: Checking Compute Engine API...")
         compute_check = await check_compute_api_enabled(project_id)
 
-        # Step 4: Enable Required APIs (AUTO-ENABLE)
-        logger.info("Bootstrap Step 4: Enabling required APIs...")
+        # Step 5: Enable Required APIs (AUTO-ENABLE)
+        logger.info("Bootstrap Step 5: Enabling required APIs...")
         apis = await api_service.enable_apis(project_id)
 
-        # Step 5: Check VPC Networks (BLOCKING)
-        logger.info("Bootstrap Step 5: Checking VPC networks...")
+        # Step 6: Check VPC Networks (BLOCKING)
+        logger.info("Bootstrap Step 6: Checking VPC networks...")
         networks = await network_service.list_networks(project_id)
 
         # Check if no networks exist at all
@@ -207,7 +281,7 @@ async def bootstrap(request: dict):
             success=True,
             data={
                 "dependencies": deps,
-                "auth": auth,
+                "account": account,
                 "telemetry_config_name": telemetry_config_name,
                 "telemetry_config_status": telemetry_config.get("status"),
                 "compute_api_enabled": True,
@@ -384,21 +458,33 @@ async def configure_telemetry(request: dict):
     log_prompts = request.get("logPrompts", False)
     gemini_cli_project_id = request.get("geminiCliProjectId")
     telemetry_project_id = request.get("telemetryProjectId")
+    auth_method = request.get("geminiAuthMethod", "oauth")
+    gemini_region = request.get("geminiRegion")
 
-    logger.info(f"Configuring telemetry (log_prompts={log_prompts}, gemini_cli={gemini_cli_project_id}, telemetry={telemetry_project_id})...")
+    # Validation: Vertex AI requires region
+    if auth_method == "vertex-ai" and not gemini_region:
+        logger.error("Gemini region is required for Vertex AI authentication")
+        return ApiResponse(
+            success=False,
+            error="Gemini region is required for Vertex AI authentication"
+        )
+
+    logger.info(f"Configuring telemetry (log_prompts={log_prompts}, gemini_cli={gemini_cli_project_id}, telemetry={telemetry_project_id}, auth={auth_method}, region={gemini_region})...")
 
     try:
         from services import telemetry_service
         result = await telemetry_service.configure_telemetry(
             log_prompts,
             gemini_cli_project_id,
-            telemetry_project_id
+            telemetry_project_id,
+            auth_method,
+            gemini_region
         )
 
         return ApiResponse(
             success=True,
             data=result,
-            message="Telemetry configured successfully"
+            message=f"Telemetry configured successfully with {auth_method} authentication"
         )
     except Exception as e:
         logger.error(f"Telemetry configuration failed: {str(e)}")
