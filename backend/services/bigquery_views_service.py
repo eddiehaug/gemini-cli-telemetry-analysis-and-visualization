@@ -96,6 +96,7 @@ async def create_daily_metrics_view(
     AS
     SELECT
       DATE(timestamp) as day,
+      event_name,
       model,
       COUNT(*) AS request_count,
       COUNT(DISTINCT {user_column}) AS distinct_users,
@@ -108,6 +109,7 @@ async def create_daily_metrics_view(
       `{project_id}.{dataset_name}.gemini_analytics_view`
     GROUP BY
       day,
+      event_name,
       model
     """
 
