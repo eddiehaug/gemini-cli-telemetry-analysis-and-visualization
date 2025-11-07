@@ -1,0 +1,259 @@
+# =============================================================================
+# Gemini CLI Telemetry - Git Ignore Configuration
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Python Backend
+# -----------------------------------------------------------------------------
+
+# Virtual Environment
+backend/venv/
+backend/env/
+backend/.venv/
+
+# Python Cache
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/**/*.pyo
+backend/**/*.pyd
+*.py[cod]
+*$py.class
+
+# Testing
+backend/.pytest_cache/
+backend/.coverage
+backend/coverage.xml
+backend/htmlcov/
+backend/.tox/
+backend/.nox/
+backend/pytest_cache/
+
+# Environment Variables
+backend/.env
+backend/.env.local
+backend/.env.*.local
+
+# Test Results (keep TEST_RESULTS.md for documentation)
+# backend/TEST_RESULTS.md  # Commented out - keep for reference
+
+# Build artifacts
+backend/build/
+backend/dist/
+backend/*.egg-info/
+backend/.eggs/
+
+# MyPy
+backend/.mypy_cache/
+backend/.dmypy.json
+backend/dmypy.json
+
+# Pyre
+backend/.pyre/
+
+# Pytype
+backend/.pytype/
+
+# Cython
+backend/*.c
+backend/*.so
+
+# -----------------------------------------------------------------------------
+# Frontend (React + TypeScript + Vite)
+# -----------------------------------------------------------------------------
+
+# Dependencies
+frontend/node_modules/
+frontend/package-lock.json  # Keep if using npm, exclude if using yarn
+# frontend/yarn.lock  # Uncomment if using yarn
+
+# Production Build
+frontend/dist/
+frontend/build/
+
+# Vite
+frontend/.vite/
+frontend/vite.config.js.timestamp-*
+frontend/vite.config.ts.timestamp-*
+
+# Cache
+frontend/.cache/
+frontend/.parcel-cache/
+
+# Environment Variables
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+frontend/.env.production
+
+# Testing
+frontend/coverage/
+frontend/.nyc_output/
+
+# TypeScript
+frontend/*.tsbuildinfo
+
+# -----------------------------------------------------------------------------
+# IDEs and Editors
+# -----------------------------------------------------------------------------
+
+# VSCode
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+
+# JetBrains IDEs (WebStorm, PyCharm, IntelliJ)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.*.sw[a-p]
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Atom
+.atom/
+
+# -----------------------------------------------------------------------------
+# Operating System
+# -----------------------------------------------------------------------------
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# -----------------------------------------------------------------------------
+# Logs
+# -----------------------------------------------------------------------------
+
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+pnpm-debug.log*
+logs/
+*.log.*
+
+# -----------------------------------------------------------------------------
+# Temporary Files
+# -----------------------------------------------------------------------------
+
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+
+# -----------------------------------------------------------------------------
+# Security & Secrets (NEVER COMMIT THESE)
+# -----------------------------------------------------------------------------
+
+# Google Cloud Credentials
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!vite.config.ts
+!backend/pytest.ini
+# Include transform.js (needed for Dataflow UDF)
+!backend/transform.js
+
+# Service Account Keys
+*-key.json
+*-credentials.json
+service-account*.json
+
+# SSH Keys
+*.pem
+*.key
+*.ppk
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+
+# SSL Certificates
+*.crt
+*.cer
+*.der
+
+# -----------------------------------------------------------------------------
+# Project Specific
+# -----------------------------------------------------------------------------
+
+# Ignore test databases or local data files
+*.db
+*.sqlite
+*.sqlite3
+
+# Ignore large binary files
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+# Ignore documentation builds (keep markdown source)
+docs/_build/
+docs/.doctrees/
+
+# -----------------------------------------------------------------------------
+# Optional: Keep These Files
+# -----------------------------------------------------------------------------
+
+# These are included in the repository
+# README.md
+# setup.sh
+# run.sh
+# bq-queries.md
+# backend/SECURITY_ASSESSMENT.md
+# backend/SECURITY_IMPROVEMENTS_APPLIED.md
+# backend/transform.js (Dataflow UDF)
