@@ -246,11 +246,22 @@ docs/_build/
 docs/.doctrees/
 
 # -----------------------------------------------------------------------------
+# Temporary Helper Files (Do Not Commit)
+# -----------------------------------------------------------------------------
+
+# Commit helper files (created for commit assistance, not part of repo)
+COMMIT_MESSAGE.txt
+PRE_COMMIT_SUMMARY.md
+READY_TO_COMMIT.md
+
+# -----------------------------------------------------------------------------
 # Optional: Keep These Files
 # -----------------------------------------------------------------------------
 
 # These are included in the repository
 # README.md
+# CHANGELOG.md (keep - part of repo history)
+# LICENSE (keep - legal requirement)
 # setup.sh
 # run.sh
 # bq-queries.md
