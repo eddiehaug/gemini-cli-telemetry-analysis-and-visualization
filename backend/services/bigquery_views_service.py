@@ -369,11 +369,11 @@ async def create_conversation_analysis_view(
       DATE(timestamp) AS day,
       {user_column},
       cli_version,
-      JSON_VALUE(payload.attributes.approvalMode) AS approval_mode,
+      JSON_EXTRACT_SCALAR(jsonPayload_json, '$.approvalMode') AS approval_mode,
       COUNT(*) AS conversation_count,
-      AVG(CAST(JSON_VALUE(payload.attributes.turnCount) AS INT64)) AS avg_turn_count,
-      MIN(CAST(JSON_VALUE(payload.attributes.turnCount) AS INT64)) AS min_turn_count,
-      MAX(CAST(JSON_VALUE(payload.attributes.turnCount) AS INT64)) AS max_turn_count
+      AVG(CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.turnCount') AS INT64)) AS avg_turn_count,
+      MIN(CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.turnCount') AS INT64)) AS min_turn_count,
+      MAX(CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.turnCount') AS INT64)) AS max_turn_count
     FROM
       `{project_id}.{dataset_name}.gemini_analytics_view`
     WHERE
@@ -466,11 +466,11 @@ async def create_cli_performance_and_resilience_view(
       COUNTIF(event_name = 'gemini_cli.flash_fallback') AS flash_fallback_count,
       COUNTIF(event_name = 'gemini_cli.chat.content_retry') AS content_retry_count,
       COUNTIF(event_name = 'gemini_cli.chat.content_retry_failure') AS content_retry_failure_count,
-      AVG(CASE WHEN event_name = 'gemini_cli.chat_compression' THEN CAST(JSON_VALUE(payload.attributes.tokens_before) AS INT64) END) AS avg_tokens_before_compression,
-      AVG(CASE WHEN event_name = 'gemini_cli.chat_compression' THEN CAST(JSON_VALUE(payload.attributes.tokens_after) AS INT64) END) AS avg_tokens_after_compression,
+      AVG(CASE WHEN event_name = 'gemini_cli.chat_compression' THEN CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.tokens_before') AS INT64) END) AS avg_tokens_before_compression,
+      AVG(CASE WHEN event_name = 'gemini_cli.chat_compression' THEN CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.tokens_after') AS INT64) END) AS avg_tokens_after_compression,
       SAFE_DIVIDE(
-        SUM(CASE WHEN event_name = 'gemini_cli.chat_compression' THEN CAST(JSON_VALUE(payload.attributes.tokens_before) AS INT64) - CAST(JSON_VALUE(payload.attributes.tokens_after) AS INT64) END),
-        SUM(CASE WHEN event_name = 'gemini_cli.chat_compression' THEN CAST(JSON_VALUE(payload.attributes.tokens_before) AS INT64) END)
+        SUM(CASE WHEN event_name = 'gemini_cli.chat_compression' THEN CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.tokens_before') AS INT64) - CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.tokens_after') AS INT64) END),
+        SUM(CASE WHEN event_name = 'gemini_cli.chat_compression' THEN CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.tokens_before') AS INT64) END)
       ) AS avg_compression_ratio
     FROM
       `{project_id}.{dataset_name}.gemini_analytics_view`
@@ -511,12 +511,12 @@ async def create_model_routing_analysis_view(
     AS
     SELECT
       DATE(timestamp) AS day,
-      JSON_VALUE(payload.attributes.decision_source) AS decision_source,
-      JSON_VALUE(payload.attributes.decision_model) AS decision_model,
+      JSON_EXTRACT_SCALAR(jsonPayload_json, '$.decision_source') AS decision_source,
+      JSON_EXTRACT_SCALAR(jsonPayload_json, '$.decision_model') AS decision_model,
       COUNT(*) AS decision_count,
-      COUNTIF(CAST(JSON_VALUE(payload.attributes.failed) AS BOOL)) AS failure_count,
-      SAFE_DIVIDE(COUNTIF(CAST(JSON_VALUE(payload.attributes.failed) AS BOOL)), COUNT(*)) AS failure_rate,
-      AVG(CAST(JSON_VALUE(payload.attributes.routing_latency_ms) AS INT64)) AS avg_routing_latency_ms
+      COUNTIF(CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.failed') AS BOOL)) AS failure_count,
+      SAFE_DIVIDE(COUNTIF(CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.failed') AS BOOL)), COUNT(*)) AS failure_rate,
+      AVG(CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.routing_latency_ms') AS INT64)) AS avg_routing_latency_ms
     FROM
       `{project_id}.{dataset_name}.gemini_analytics_view`
     WHERE
@@ -618,11 +618,11 @@ async def create_user_configuration_view(
       SELECT
         {user_column},
         cli_version,
-        JSON_VALUE(payload.attributes.sandbox_enabled) AS sandbox_enabled,
-        JSON_VALUE(payload.attributes.log_user_prompts_enabled) AS log_prompts_enabled,
-        JSON_VALUE(payload.attributes.output_format) AS output_format,
-        JSON_VALUE(payload.attributes.extensions) AS extensions,
-        CAST(JSON_VALUE(payload.attributes.extension_count) AS INT64) AS extension_count,
+        JSON_EXTRACT_SCALAR(jsonPayload_json, '$.sandbox_enabled') AS sandbox_enabled,
+        JSON_EXTRACT_SCALAR(jsonPayload_json, '$.log_user_prompts_enabled') AS log_prompts_enabled,
+        JSON_EXTRACT_SCALAR(jsonPayload_json, '$.output_format') AS output_format,
+        JSON_EXTRACT_SCALAR(jsonPayload_json, '$.extensions') AS extensions,
+        CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.extension_count') AS INT64) AS extension_count,
         timestamp,
         ROW_NUMBER() OVER(PARTITION BY {user_column} ORDER BY timestamp DESC) as rn
       FROM

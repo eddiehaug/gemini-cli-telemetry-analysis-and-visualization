@@ -249,12 +249,11 @@ async def create_analytics_view(
         view_id = f"{project_id}.{dataset_name}.gemini_analytics_view"
 
         # Determine column names based on pseudoanonymization setting
+        # Note: user.email and installation.id are common attributes in jsonPayload per OpenTelemetry spec
         if pseudoanonymize_pii:
-            user_email_field = "TO_HEX(SHA256(COALESCE(JSON_VALUE(labels_json, '$.user_email'), 'unknown'))) AS user_pseudonym"
-            install_id_field = "TO_HEX(SHA256(COALESCE(JSON_VALUE(labels_json, '$.installation_id'), 'unknown'))) AS installation_id_hash"
+            user_email_field = "TO_HEX(SHA256(COALESCE(JSON_EXTRACT_SCALAR(jsonPayload_json, \"$['user.email']\"), 'unknown'))) AS user_pseudonym"
         else:
-            user_email_field = "JSON_VALUE(labels_json, '$.user_email') AS user_email"
-            install_id_field = "JSON_VALUE(labels_json, '$.installation_id') AS installation_id"
+            user_email_field = "JSON_EXTRACT_SCALAR(jsonPayload_json, \"$['user.email']\") AS user_email"
 
         # SQL query that defines the view
         # This implements schema-on-read pattern: parse JSON strings at query time
@@ -280,46 +279,59 @@ SELECT
   SAFE.PARSE_JSON(jsonPayload_json) AS payload,
 
   -- Extract common telemetry fields for convenience
-  JSON_VALUE(jsonPayload_json, '$.event.name') AS event_name,
-  JSON_VALUE(jsonPayload_json, '$.event.domain') AS event_domain,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, "$['event.name']") AS event_name,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, "$['event.domain']") AS event_domain,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, "$['event.timestamp']") AS event_timestamp,
 
-  -- Session information
-  JSON_VALUE(jsonPayload_json, '$.session.id') AS session_id,
-  JSON_VALUE(jsonPayload_json, '$.session.duration_ms') AS session_duration_ms,
+  -- Common attributes (session, installation, user) from jsonPayload
+  JSON_EXTRACT_SCALAR(jsonPayload_json, "$['session.id']") AS session_id,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, "$['installation.id']") AS installation_id,
 
-  -- Gen AI request fields
-  JSON_VALUE(jsonPayload_json, '$.gen_ai.request.model') AS model,
-  JSON_VALUE(jsonPayload_json, '$.gen_ai.request.temperature') AS temperature,
-  JSON_VALUE(jsonPayload_json, '$.gen_ai.request.top_p') AS top_p,
-  JSON_VALUE(jsonPayload_json, '$.gen_ai.request.top_k') AS top_k,
-  JSON_VALUE(jsonPayload_json, '$.gen_ai.request.max_output_tokens') AS max_output_tokens,
+  -- Gen AI request fields (from gemini_cli.api_request/response events)
+  JSON_EXTRACT_SCALAR(jsonPayload_json, '$.model') AS model,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, '$.model_name') AS model_name,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, '$.auth_type') AS auth_type,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, '$.prompt_id') AS prompt_id,
 
-  -- Gen AI response fields
-  JSON_VALUE(jsonPayload_json, '$.gen_ai.response.finish_reason') AS finish_reason,
-  JSON_VALUE(jsonPayload_json, '$.gen_ai.response.candidates') AS candidates,
+  -- GenAI semantic convention fields (from gen_ai.client.inference.operation.details)
+  JSON_EXTRACT_SCALAR(jsonPayload_json, "$['gen_ai.request.model']") AS gen_ai_request_model,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, "$['gen_ai.request.temperature']") AS FLOAT64) AS temperature,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, "$['gen_ai.request.top_p']") AS FLOAT64) AS top_p,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, "$['gen_ai.request.top_k']") AS INT64) AS top_k,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, "$['gen_ai.request.max_tokens']") AS INT64) AS max_output_tokens,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, "$['gen_ai.response.finish_reasons']") AS finish_reason,
 
-  -- Token usage (cast to numeric for aggregation)
-  CAST(JSON_VALUE(jsonPayload_json, '$.gen_ai.usage.input_tokens') AS INT64) AS input_tokens,
-  CAST(JSON_VALUE(jsonPayload_json, '$.gen_ai.usage.output_tokens') AS INT64) AS output_tokens,
-  CAST(JSON_VALUE(jsonPayload_json, '$.gen_ai.usage.cached_content_token_count') AS INT64) AS cached_tokens,
-  CAST(JSON_VALUE(jsonPayload_json, '$.gen_ai.usage.total_token_count') AS INT64) AS total_tokens,
+  -- Token usage (from gemini_cli.api_response - uses _token_count suffix)
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.input_token_count') AS INT64) AS input_tokens,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.output_token_count') AS INT64) AS output_tokens,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.cached_content_token_count') AS INT64) AS cached_tokens,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.thoughts_token_count') AS INT64) AS thoughts_tokens,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.tool_token_count') AS INT64) AS tool_tokens,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.total_token_count') AS INT64) AS total_tokens,
+
+  -- GenAI semantic convention token usage (alternative path)
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, "$['gen_ai.usage.input_tokens']") AS INT64) AS gen_ai_input_tokens,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, "$['gen_ai.usage.output_tokens']") AS INT64) AS gen_ai_output_tokens,
 
   -- Tool/function call information
-  JSON_VALUE(jsonPayload_json, '$.function.name') AS function_name,
-  JSON_VALUE(jsonPayload_json, '$.function.type') AS function_type,
-  CAST(JSON_VALUE(jsonPayload_json, '$.function.duration_ms') AS FLOAT64) AS function_duration_ms,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, '$.function_name') AS function_name,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, '$.function_args') AS function_args,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.duration_ms') AS FLOAT64) AS function_duration_ms,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.success') AS BOOL) AS function_success,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, '$.tool_type') AS tool_type,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, '$.mcp_server_name') AS mcp_server_name,
 
   -- Performance metrics
-  CAST(JSON_VALUE(jsonPayload_json, '$.duration_ms') AS FLOAT64) AS duration_ms,
-  JSON_VALUE(jsonPayload_json, '$.status') AS status,
-  JSON_VALUE(jsonPayload_json, '$.error.message') AS error_message,
-  JSON_VALUE(jsonPayload_json, '$.error.code') AS error_code,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.duration_ms') AS FLOAT64) AS duration_ms,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.status_code') AS INT64) AS status_code,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, '$.error') AS error,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, "$['error.message']") AS error_message,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, "$['error.type']") AS error_code,
 
   -- User/installation tracking (CONDITIONAL PSEUDOANONYMIZATION)
-  JSON_VALUE(resource_json, '$.labels.project_id') AS resource_project_id,
+  JSON_EXTRACT_SCALAR(resource_json, '$.labels.project_id') AS resource_project_id,
   {user_email_field},
-  {install_id_field},
-  JSON_VALUE(labels_json, '$.cli_version') AS cli_version,
+  JSON_EXTRACT_SCALAR(labels_json, '$.cli_version') AS cli_version,
 
   -- Keep original JSON strings for advanced queries
   resource_json,
@@ -429,7 +441,7 @@ async def enrich_table_metadata_internal(client: bigquery.Client, project_id: st
             "labels_json": "User-defined labels as JSON string. Parse with: JSON_VALUE(labels_json, '$.key_name')",
             "operation_json": "Long-running operation info as JSON string. Parse with: JSON_VALUE(operation_json, '$.id')",
             "httpRequest_json": "HTTP request details as JSON string. Parse with: JSON_VALUE(httpRequest_json, '$.requestMethod')",
-            "jsonPayload_json": "Gemini CLI telemetry data as JSON string. Parse with: JSON_VALUE(jsonPayload_json, '$.event.name'), JSON_VALUE(jsonPayload_json, '$.gen_ai.request.model'). Use the analytics view for easier querying.",
+            "jsonPayload_json": "Gemini CLI telemetry data as JSON string (OpenTelemetry format). Common fields: event.name, session.id, installation.id, user.email, model, status_code, input_token_count, output_token_count, total_token_count, error.message, error.type. Parse with: JSON_EXTRACT_SCALAR(jsonPayload_json, \"$['event.name']\"), JSON_EXTRACT_SCALAR(jsonPayload_json, '$.model'). Use the analytics view for easier querying.",
         }
 
         # Create new schema with descriptions
@@ -518,15 +530,18 @@ WHERE timestamp > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
 ### Extract Telemetry Data
 ```sql
 -- Extract Gemini CLI event data from jsonPayload_json
+-- Note: The JSON structure uses flat keys with dots (not nested objects)
+-- Token fields use _token_count suffix per the telemetry specification
 SELECT
   timestamp,
-  JSON_VALUE(jsonPayload_json, '$.event.name') as event_name,
-  JSON_VALUE(jsonPayload_json, '$.session.id') as session_id,
-  JSON_VALUE(jsonPayload_json, '$.gen_ai.request.model') as model,
-  CAST(JSON_VALUE(jsonPayload_json, '$.gen_ai.usage.input_tokens') AS INT64) as input_tokens,
-  CAST(JSON_VALUE(jsonPayload_json, '$.gen_ai.usage.output_tokens') AS INT64) as output_tokens
+  JSON_EXTRACT_SCALAR(jsonPayload_json, "$['event.name']") as event_name,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, "$['session.id']") as session_id,
+  JSON_EXTRACT_SCALAR(jsonPayload_json, '$.model') as model,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.input_token_count') AS INT64) as input_tokens,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.output_token_count') AS INT64) as output_tokens,
+  CAST(JSON_EXTRACT_SCALAR(jsonPayload_json, '$.total_token_count') AS INT64) as total_tokens
 FROM `{table_id}`
-WHERE JSON_VALUE(jsonPayload_json, '$.event.name') = 'gemini_cli.api_response'
+WHERE JSON_EXTRACT_SCALAR(jsonPayload_json, "$['event.name']") = 'gemini_cli.api_response'
   AND timestamp > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
 ORDER BY timestamp DESC
 LIMIT 100

@@ -8,6 +8,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed - BigQuery Analytics Views JSON Field Extraction (2025-11-07)
+
+#### Issue: Null Values in Looker Studio Dashboard
+**Problem**: Looker Studio dashboard showed `null` for model names and missing token counts despite data existing in BigQuery raw logs.
+
+**Root Cause**: BigQuery analytics views were using incorrect JSON field paths that didn't match the actual Gemini CLI telemetry structure:
+1. **Wrong JSON function**: Used `JSON_VALUE()` which has compatibility issues with certain path syntaxes
+2. **Incorrect model path**: Used `$.gen_ai.request.model` instead of `$.model`
+3. **Incorrect token paths**: Used `$.input_tokens` instead of `$.input_token_count`
+4. **Wrong attribute access**: Used `payload.attributes.field` instead of direct extraction from `jsonPayload_json`
+5. **Wrong user email source**: Extracted from `labels_json` instead of `jsonPayload_json`
+
+**Investigation**:
+- Analyzed sample JSON payload from `gemini_raw_logs` table
+- Discovered flat JSON structure with dotted keys (e.g., `"event.name"`, `"session.id"`)
+- Reviewed [official Gemini CLI telemetry documentation](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md)
+- Identified misalignment between code and OpenTelemetry specification
+
+**Fix Applied**:
+
+**Files Modified**:
+- `app/backend/services/bigquery_service.py` (lines 251-344): Base analytics view
+  - Changed `JSON_VALUE()` → `JSON_EXTRACT_SCALAR()` (BigQuery compatible)
+  - Updated model extraction: `$.gen_ai.request.model` → `$.model`
+  - Fixed token fields: `$.input_tokens` → `$.input_token_count`, etc.
+  - Added new fields: `model_name`, `auth_type`, `prompt_id`, `event.timestamp`
+  - Fixed user email: `labels_json` → `jsonPayload_json, "$['user.email']"`
+  - Added GenAI semantic convention fields
+  - Updated field paths for dotted keys: `$['event.name']`, `$['session.id']`
+
+- `app/backend/services/bigquery_views_service.py`: Downstream analytics views
+  - `create_conversation_analysis_view` (lines 362-386): Fixed `payload.attributes.*` → direct extraction
+  - `create_cli_performance_and_resilience_view` (lines 460-482): Fixed compression token fields
+  - `create_model_routing_analysis_view` (lines 509-528): Fixed routing decision fields
+  - `create_user_configuration_view` (lines 615-646): Fixed config attribute extraction
+
+**New Utility Scripts** (in project root):
+- `fix_views_and_tables.py`: Automated script to delete and recreate all views/tables
+  - Preserves `gemini_raw_logs` and `gemini_analytics_view`
+  - Deletes and recreates 12 analytics views
+  - Deletes and recreates 3 rollup/alert tables
+  - Interactive confirmation with detailed progress reporting
+- `FIX_VIEWS_README.md`: Comprehensive usage guide for the fix script
+
+**Correct JSON Paths** (per official spec):
+- Model: `$.model` or `$.model_name`
+- Tokens: `$.input_token_count`, `$.output_token_count`, `$.total_token_count`
+- Event: `$['event.name']`, `$['event.timestamp']`
+- Session: `$['session.id']`, `$['installation.id']`
+- User: `$['user.email']` (from `jsonPayload_json`)
+- Errors: `$['error.message']`, `$['error.type']`
+- Config attributes: Direct from `jsonPayload_json` (not `payload.attributes`)
+
+**Testing**:
+- Manually recreated `gemini_analytics_view` in BigQuery
+- Verified model names and token counts populate correctly
+- Ran automated fix script to update all downstream views
+- All 12 views + 3 tables recreated successfully
+
+**Impact**:
+- ✅ Looker Studio dashboard now shows actual model names (e.g., `gemini-2.5-flash-lite`)
+- ✅ Token usage metrics populate correctly
+- ✅ All visualizations display proper breakdowns
+- ✅ Analytics views align with OpenTelemetry specification
+- ✅ Future-proof: Matches official Gemini CLI telemetry structure
+
+**Migration Path**:
+For existing deployments, run the fix script:
+```bash
+python fix_views_and_tables.py --project PROJECT_ID --dataset DATASET_NAME
+```
+
+---
+
 ### Fixed - Authentication UI and Backend (2025-11-07)
 
 #### Issue 1: OAuth Button Missing in Single-Project Mode
