@@ -396,7 +396,7 @@ The application creates **16 analytics views** to answer common business questio
 | 2 | `vw_user_activity` | View | Aggregates usage metrics by user, providing insights into user adoption and engagement. Helps identify power users, inactive users, and overall user activity patterns. |
 | 3 | `vw_token_usage` | Materialized View | Provides detailed analysis of token consumption, breaking down input, output, and cached tokens by day, user, and model. Useful for understanding cost drivers and model efficiency. Refreshes every 60 minutes. |
 | 4 | `vw_tool_performance` | View | Provides insights into the performance and usage patterns of various tools invoked by the Gemini CLI. Tracks total calls, success/failure rates, and average execution durations for each tool. |
-| 5 | `vw_quota_tracking` | View | Provides minute-level aggregation of model requests and token usage per user and model. Designed to support monitoring against official Gemini CLI quotas (Requests Per Minute and Requests Per Day per user). |
+| 5 | `vw_quota_tracking` | View | Provides minute-level aggregation of model requests, token usage, and 429 error tracking per user and model. Includes per-minute, per-hour, and per-day error counts. Designed to support monitoring against official Gemini CLI quotas (Requests Per Minute and Requests Per Day per user). |
 | 6 | `vw_error_analysis` | View | Provides a consolidated look at errors, breaking them down by day, CLI version, model, error code, and message. Helps identify common issues, track error frequencies, and pinpoint if errors correlate with specific CLI releases. |
 | 7 | `daily_rollup_table` | Scheduled Query (Table) | Processes the previous day's telemetry data and aggregates key metrics into a partitioned table. Serves as a highly optimized source for daily reporting and historical analysis. Partitioned by `day`, clustered by `model`. |
 | 8 | `weekly_rollup_table` | Scheduled Query (Table) | Processes the previous week's telemetry data and aggregates key metrics into a partitioned table. Provides highly optimized source for weekly reporting and trend analysis. Partitioned by `week_start_date`, clustered by `model`. |
@@ -407,13 +407,14 @@ The application creates **16 analytics views** to answer common business questio
 | 13 | `vw_feature_adoption` | Materialized View | Tracks the adoption of key features like slash commands, agent mode, and extensions. Provides daily breakdown of feature usage by user and CLI version, helping identify power users and measure impact of new releases. Refreshes every 60 minutes. |
 | 14 | `vw_user_configuration` | View | Captures the latest known configuration for each user based on the `gemini_cli.config` event logged at startup. Useful for understanding how users customize their environment, which can inform default settings and documentation priorities. |
 | 15 | `vw_conversation_analysis` | Materialized View | Analyzes chat sessions using the `gemini_cli.conversation_finished` event. Provides metrics on conversation length (turn count) and how they vary by user, CLI version, and approval mode. Useful for understanding user engagement and interaction patterns. Refreshes every 60 minutes. |
+| 16 | `vw_429_error_summary` | View | AI-powered analysis of 429 rate limit errors using Gemini 2.5 Flash. Analyzes the last 250 rate limit errors and generates a natural language summary identifying common patterns, affected models, potential causes, and actionable recommendations. Requires Vertex AI API integration. |
 
 ### View Categories
 
 **Regular Views** (query raw data on-demand):
 - `daily_metrics`, `vw_user_activity`, `vw_error_analysis`, `vw_tool_performance`
 - `vw_cli_performance_and_resilience`, `vw_model_routing_analysis`
-- `vw_quota_tracking`, `vw_user_configuration`
+- `vw_quota_tracking`, `vw_user_configuration`, `vw_429_error_summary`
 
 **Materialized Views** (auto-refresh every 60 minutes):
 - `vw_token_usage`, `vw_malformed_json_responses`, `vw_feature_adoption`, `vw_conversation_analysis`
@@ -448,13 +449,15 @@ The quota tracking view now includes comprehensive 429 error monitoring:
 ```sql
 SELECT
   DATE(minute) as day,
-  SUM(error_429_count_per_day) as total_429_errors,
-  SUM(requests_per_day) as total_requests
+  SUM(error_429_count_per_minute) as total_429_errors,
+  SUM(requests_per_minute) as total_requests
 FROM `project.dataset.vw_quota_tracking`
 WHERE DATE(minute) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
 GROUP BY day
 ORDER BY day DESC
 ```
+
+**Note**: Always use the `per_minute` fields with SUM aggregation, not the `per_day` or `per_hour` fields. The pre-aggregated fields use window functions that repeat values across rows, causing incorrect totals when summed. See `LOOKER_STUDIO_429_CHARTS.md` for detailed visualization guidance.
 
 #### 2. AI-Powered Error Analysis (`vw_429_error_summary`)
 
@@ -517,6 +520,24 @@ See `ADD_429_TRACKING_README.md` for detailed migration instructions.
 - Cost per query to `vw_429_error_summary`: ~$0.006
 - On-demand only (costs only when queried)
 - Estimated monthly cost (queried once/day): ~$0.18
+
+### Looker Studio Dashboards
+
+For detailed instructions on creating 429 error tracking visualizations in Looker Studio, see `LOOKER_STUDIO_429_CHARTS.md`.
+
+**Available Charts**:
+1. Total 429 Errors Today (Scorecard)
+2. Error Rate % Today (Scorecard)
+3. Affected Users Today (Scorecard)
+4. 429 Errors Over Time (Time Series - hourly granularity)
+5. 429 Errors by Hour (Time Series - optional)
+6. Errors by User and Model (Table)
+7. AI Error Summary (Table with text wrapping)
+
+**Important Notes**:
+- Use `per_minute` fields with SUM aggregation in calculated fields
+- Group by `hour` for time series charts to get optimal granularity (0-4 errors per hour)
+- The AI Error Summary view returns only 1 row and displays best in a Table format with text wrapping enabled
 
 ---
 
