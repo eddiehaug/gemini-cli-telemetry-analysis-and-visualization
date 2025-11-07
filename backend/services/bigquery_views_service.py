@@ -2,9 +2,10 @@
 BigQuery Analytics Views Service
 Creates materialized views, regular views, and scheduled queries for Gemini CLI telemetry analysis.
 
-This service creates all 15 analytics views specified in bq-queries.md:
-- 10 Materialized Views (auto-refresh enabled)
-- 2 Regular Views (no refresh)
+This service creates all 16 analytics views specified in bq-queries.md:
+- 6 Regular Views (converted from materialized due to BigQuery limitations)
+- 4 Materialized Views (auto-refresh enabled)
+- 3 Regular Views (no refresh, including AI-powered error analysis)
 - 3 Scheduled Query Tables (require manual scheduling)
 """
 
@@ -42,6 +43,7 @@ VIEW_CREATION_FUNCTIONS = [
     # Regular views (no refresh needed)
     "create_quota_tracking_view",
     "create_user_configuration_view",
+    "create_429_error_summary_view",
 
     # Scheduled query tables
     "create_daily_rollup_table",
@@ -63,6 +65,7 @@ EXPECTED_VIEW_NAMES = [
     "vw_conversation_analysis",
     "vw_quota_tracking",
     "vw_user_configuration",
+    "vw_429_error_summary",
 ]
 
 # Expected table names (for verification)
@@ -552,7 +555,13 @@ async def create_quota_tracking_view(
 ) -> Dict:
     """
     Create vw_quota_tracking regular view.
-    Minute-level aggregation for RPM/RPD quota monitoring.
+    Minute-level aggregation for RPM/RPD quota monitoring with 429 error tracking.
+
+    Includes:
+    - Requests per minute/hour/day
+    - Token usage per minute
+    - 429 error counts per minute/hour/day
+    - Total error counts per minute
     """
     view_id = f"{project_id}.{dataset_name}.vw_quota_tracking"
 
@@ -561,33 +570,49 @@ async def create_quota_tracking_view(
     WITH MinuteAgg AS (
       SELECT
         DATE(timestamp) AS day,
+        TIMESTAMP_TRUNC(timestamp, HOUR) AS hour,
         TIMESTAMP_TRUNC(timestamp, MINUTE) AS minute,
         {user_column},
         model,
         COUNTIF(event_name = 'gemini_cli.api_response') AS requests_per_minute,
+        COUNTIF(status_code = 429) AS error_429_count_per_minute,
+        COUNTIF(status_code >= 400) AS total_errors_per_minute,
         SUM(input_tokens) AS input_tokens_per_minute,
         SUM(output_tokens) AS output_tokens_per_minute,
         SUM(total_tokens) AS total_tokens_per_minute
       FROM
         `{project_id}.{dataset_name}.gemini_analytics_view`
       WHERE
-        {user_column} IS NOT NULL AND event_name = 'gemini_cli.api_response'
+        {user_column} IS NOT NULL
+        AND event_name IN ('gemini_cli.api_response', 'gemini_cli.api_error')
       GROUP BY
         day,
+        hour,
         minute,
         {user_column},
         model
     )
     SELECT
       ma.day,
+      ma.hour,
       ma.minute,
       ma.{user_column},
       ma.model,
       ma.requests_per_minute,
+      ma.error_429_count_per_minute,
+      ma.total_errors_per_minute,
       ma.input_tokens_per_minute,
       ma.output_tokens_per_minute,
       ma.total_tokens_per_minute,
-      SUM(ma.requests_per_minute) OVER (PARTITION BY ma.day, ma.{user_column}, ma.model) AS requests_per_day
+      SUM(ma.error_429_count_per_minute) OVER (
+        PARTITION BY ma.day, ma.hour, ma.{user_column}, ma.model
+      ) AS error_429_count_per_hour,
+      SUM(ma.error_429_count_per_minute) OVER (
+        PARTITION BY ma.day, ma.{user_column}, ma.model
+      ) AS error_429_count_per_day,
+      SUM(ma.requests_per_minute) OVER (
+        PARTITION BY ma.day, ma.{user_column}, ma.model
+      ) AS requests_per_day
     FROM
       MinuteAgg AS ma
     """
@@ -654,6 +679,106 @@ async def create_user_configuration_view(
         return {"view": view_id, "type": "view", "status": "created"}
     except Exception as e:
         logger.error(f"✗ Failed to create {view_id}: {str(e)}")
+        raise
+
+
+async def create_429_error_summary_view(
+    client: bigquery.Client,
+    project_id: str,
+    dataset_name: str,
+    user_column: str = "user_email"
+) -> Dict:
+    """
+    Create vw_429_error_summary regular view.
+    Uses Gemini (via ML.GENERATE_TEXT) to analyze and summarize the last 250 rate limit errors.
+
+    Prerequisites:
+    - Vertex AI API must be enabled
+    - BigQuery connection to Vertex AI must exist
+    - Remote Gemini model must be created (gemini_flash_model)
+
+    Returns:
+    - total_429_errors: Count of 429 errors in the sample
+    - oldest_error: Timestamp of oldest error in sample
+    - newest_error: Timestamp of newest error in sample
+    - error_summary: Gemini-generated natural language summary of error patterns
+    """
+    view_id = f"{project_id}.{dataset_name}.vw_429_error_summary"
+
+    query = f"""
+    CREATE OR REPLACE VIEW `{view_id}` AS
+    WITH recent_429_errors AS (
+      SELECT
+        timestamp,
+        model,
+        error_message,
+        status_code,
+        {user_column}
+      FROM `{project_id}.{dataset_name}.gemini_analytics_view`
+      WHERE status_code = 429
+      ORDER BY timestamp DESC
+      LIMIT 250
+    ),
+    error_messages_aggregated AS (
+      SELECT
+        STRING_AGG(
+          CONCAT(
+            'Timestamp: ', CAST(timestamp AS STRING),
+            ', User: ', COALESCE({user_column}, 'unknown'),
+            ', Model: ', COALESCE(model, 'unknown'),
+            ', Error: ', SUBSTR(COALESCE(error_message, 'No message'), 1, 200)
+          ),
+          '\\n'
+          LIMIT 250
+        ) AS all_error_messages,
+        COUNT(*) AS total_429_errors,
+        MIN(timestamp) AS oldest_error,
+        MAX(timestamp) AS newest_error
+      FROM recent_429_errors
+    )
+    SELECT
+      total_429_errors,
+      oldest_error,
+      newest_error,
+      ml_generate_text_llm_result AS error_summary
+    FROM error_messages_aggregated,
+    ML.GENERATE_TEXT(
+      MODEL `{project_id}.{dataset_name}.gemini_flash_model`,
+      (
+        SELECT
+          CONCAT(
+            'Analyze the following 429 rate limit errors from Gemini CLI and provide a concise summary:\\n',
+            '1. Identify the most common error patterns\\n',
+            '2. List affected models\\n',
+            '3. Suggest potential causes (e.g., which quotas might be exceeded)\\n',
+            '4. Provide 2-3 actionable recommendations\\n\\n',
+            'Errors:\\n',
+            all_error_messages
+          ) AS prompt
+        FROM error_messages_aggregated
+      ),
+      STRUCT(
+        0.3 AS temperature,
+        1024 AS max_output_tokens,
+        TRUE AS flatten_json_output
+      )
+    )
+    WHERE total_429_errors > 0
+    """
+
+    try:
+        query_job = client.query(query)
+        query_job.result()
+        logger.info(f"✓ Created view: {view_id}")
+        return {"view": view_id, "type": "view", "status": "created"}
+    except Exception as e:
+        logger.error(f"✗ Failed to create {view_id}: {str(e)}")
+        # If the error is because the remote model doesn't exist, provide helpful message
+        if "gemini_flash_model" in str(e).lower() or "not found" in str(e).lower():
+            logger.warning(
+                "Note: This view requires a remote Gemini model. "
+                "Run the Vertex AI setup script or create the model manually."
+            )
         raise
 
 
@@ -901,6 +1026,8 @@ async def create_all_analytics_views(
     """
     Create all analytics views, materialized views, and scheduled query tables.
 
+    Also sets up Vertex AI integration for ML.GENERATE_TEXT functionality.
+
     Args:
         project_id: GCP project ID
         dataset_name: BigQuery dataset name
@@ -924,8 +1051,34 @@ async def create_all_analytics_views(
         "created": [],
         "failed": [],
         "user_column": user_column,
-        "pseudoanonymized": use_pseudonyms
+        "pseudoanonymized": use_pseudonyms,
+        "vertex_ai_setup": None
     }
+
+    # Get dataset location for Vertex AI connection
+    dataset = client.get_dataset(f"{project_id}.{dataset_name}")
+    dataset_location = dataset.location
+    logger.info(f"Dataset location: {dataset_location}")
+
+    # Setup Vertex AI integration for ML.GENERATE_TEXT (used in vw_429_error_summary)
+    try:
+        logger.info("Setting up Vertex AI integration for BigQuery ML...")
+        from services.vertex_ai_setup import setup_vertex_ai_for_bigquery
+
+        vertex_ai_result = await setup_vertex_ai_for_bigquery(
+            project_id=project_id,
+            dataset_name=dataset_name,
+            region=dataset_location,
+            connection_id="vertex_ai_connection",
+            model_name="gemini_flash_model",
+            endpoint="gemini-2.5-flash"
+        )
+        results["vertex_ai_setup"] = vertex_ai_result
+        logger.info("✓ Vertex AI setup completed successfully")
+    except Exception as e:
+        logger.warning(f"Vertex AI setup failed: {str(e)}")
+        logger.warning("The vw_429_error_summary view will not work without Vertex AI setup.")
+        results["vertex_ai_setup"] = {"status": "failed", "error": str(e)}
 
     # List of all view creation functions - matches VIEW_CREATION_FUNCTIONS constant
     view_functions = [
@@ -946,6 +1099,7 @@ async def create_all_analytics_views(
         # Regular views (no refresh needed)
         create_quota_tracking_view,
         create_user_configuration_view,
+        create_429_error_summary_view,  # AI-powered 429 error analysis (requires Vertex AI)
 
         # Scheduled query tables
         create_daily_rollup_table,
@@ -981,7 +1135,7 @@ async def verify_all_analytics_views(
     dataset_name: str
 ) -> Dict:
     """
-    Verify that all 15 analytics views were created successfully.
+    Verify that all 16 analytics views were created successfully.
 
     Args:
         project_id: GCP project ID
@@ -1047,9 +1201,9 @@ async def verify_all_analytics_views(
 
     results["verified_count"] = len(results["verified_views"]) + len(results["verified_tables"])
 
-    if results["verified_count"] == 15:
-        logger.info("✓ All 15 analytics views/tables verified successfully")
+    if results["verified_count"] == 16:
+        logger.info("✓ All 16 analytics views/tables verified successfully")
     else:
-        logger.warning(f"⚠ Only {results['verified_count']}/15 views/tables verified")
+        logger.warning(f"⚠ Only {results['verified_count']}/16 views/tables verified")
 
     return results

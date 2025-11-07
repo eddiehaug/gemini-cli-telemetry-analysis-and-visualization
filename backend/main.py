@@ -907,13 +907,13 @@ async def verify_analytics_views(request: dict):
             return ApiResponse(
                 success=False,
                 data=result,
-                message=f"Verified {verified_count}/15 views. {missing_count} missing."
+                message=f"Verified {verified_count}/16 views. {missing_count} missing."
             )
         else:
             return ApiResponse(
                 success=True,
                 data=result,
-                message=f"All 15 analytics views verified successfully"
+                message=f"All 16 analytics views verified successfully"
             )
     except Exception as e:
         logger.error(f"Analytics views verification failed: {str(e)}")

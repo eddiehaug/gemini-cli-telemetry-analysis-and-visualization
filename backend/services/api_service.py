@@ -23,6 +23,7 @@ REQUIRED_APIS = [
     "cloudresourcemanager.googleapis.com",  # Project resource management
     "serviceusage.googleapis.com",       # API enablement service
     "bigquerydatatransfer.googleapis.com",  # BigQuery Data Transfer for scheduled queries
+    "aiplatform.googleapis.com",         # Vertex AI API for ML.GENERATE_TEXT in analytics views
 ]
 
 

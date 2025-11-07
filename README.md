@@ -36,7 +36,7 @@ The wizard deploys and configures:
 1. **BigQuery Infrastructure**
    - Dataset with regional configuration
    - Raw logs table with unbreakable JSON schema
-   - 15 analytics views (12 regular views + 3 scheduled query tables)
+   - 16 analytics views (13 regular views + 3 scheduled query tables)
 
 2. **Streaming Pipeline**
    - Cloud Logging sink for log extraction
@@ -386,7 +386,7 @@ Each service is responsible for a specific GCP component:
 
 ## Analytics Views
 
-The application creates **15 analytics views** to answer common business questions. Full SQL queries are available in `bq-queries.md`.
+The application creates **16 analytics views** to answer common business questions. Full SQL queries are available in `bq-queries.md`.
 
 ### View Summary
 
@@ -422,6 +422,101 @@ The application creates **15 analytics views** to answer common business questio
 - `daily_rollup_table` - Daily at 2 AM (90-day retention)
 - `quota_alerts_table` - Hourly (30-day retention)
 - `weekly_rollup_table` - Weekly on Sunday at 3 AM (52-week retention)
+
+---
+
+## 429 Error Tracking & AI Analysis
+
+### Overview
+
+The application includes advanced rate limit monitoring and AI-powered error analysis to help you understand and prevent quota exhaustion.
+
+### Features
+
+#### 1. Enhanced Quota Tracking (`vw_quota_tracking`)
+
+The quota tracking view now includes comprehensive 429 error monitoring:
+
+**New Fields**:
+- `hour` - Hourly timestamp for aggregation
+- `error_429_count_per_minute` - Count of 429 errors per minute
+- `error_429_count_per_hour` - Hourly 429 error count
+- `error_429_count_per_day` - Daily 429 error count
+- `total_errors_per_minute` - All HTTP errors per minute
+
+**Usage Example**:
+```sql
+SELECT
+  DATE(minute) as day,
+  SUM(error_429_count_per_day) as total_429_errors,
+  SUM(requests_per_day) as total_requests
+FROM `project.dataset.vw_quota_tracking`
+WHERE DATE(minute) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+GROUP BY day
+ORDER BY day DESC
+```
+
+#### 2. AI-Powered Error Analysis (`vw_429_error_summary`)
+
+Gemini analyzes your 429 errors and provides actionable insights.
+
+**Query Example**:
+```sql
+SELECT
+  total_429_errors,
+  oldest_error,
+  newest_error,
+  error_summary
+FROM `project.dataset.vw_429_error_summary`
+```
+
+### Vertex AI Setup
+
+The AI-powered error analysis requires Vertex AI integration.
+
+#### Prerequisites
+
+1. **Enable Vertex AI API**:
+```bash
+gcloud services enable aiplatform.googleapis.com --project=YOUR_PROJECT_ID
+```
+
+2. **IAM Permissions**:
+   - `bigquery.connections.create` - Create Vertex AI connection
+   - `iam.serviceAccounts.actAs` - Grant permissions to service accounts
+   - `aiplatform.endpoints.predict` - Use Vertex AI models
+
+#### Automated Setup (New Deployments)
+
+For new deployments, Vertex AI setup is included in Step 19 of the deployment wizard (Create Analytics Views):
+- Creates BigQuery connection to Vertex AI
+- Grants necessary IAM permissions
+- Creates remote Gemini model (`gemini_flash_model`)
+
+#### Manual Setup (Existing Deployments)
+
+For existing deployments, run the migration script:
+
+```bash
+# From project root directory
+python add_429_tracking.py \
+  --project YOUR_PROJECT_ID \
+  --dataset YOUR_DATASET_NAME
+```
+
+See `ADD_429_TRACKING_README.md` for detailed migration instructions.
+
+### Cost Considerations
+
+**BigQuery Costs**:
+- Views are free (no storage cost)
+- Standard query pricing applies
+
+**ML.GENERATE_TEXT Costs**:
+- Pricing: ~$0.000125 per 1,000 characters
+- Cost per query to `vw_429_error_summary`: ~$0.006
+- On-demand only (costs only when queried)
+- Estimated monthly cost (queried once/day): ~$0.18
 
 ---
 
@@ -503,7 +598,7 @@ The wizard executes 17 steps split into 2 phases:
 16. **Create Log Sink** - Sink to Pub/Sub topic
 17. **Verify ELT Pipeline** - Check complete pipeline
 18. **End-to-End Test** - Verify complete data flow (10-15 minutes for first data)
-19. **Create Analytics Views** - 15 views for analysis
+19. **Create Analytics Views** - 16 views for analysis (includes Vertex AI setup for AI-powered error analysis)
 20. **Verify Analytics Views** - Confirm all views created
 
 ---
