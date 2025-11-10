@@ -2,6 +2,8 @@
 
 **Major new features and improvements will be committed soon. I highly recommend you to wait until then for testing as one of the new features is a tear down button to revert all changes.**
 
+Other improvements include the automated deployment of a Grafana instance in GKE Autopilot, with connection to BigQuery and 6 dashboards ready-made for tracking quota, user adoption, issues, etc.
+
 ---
 
 
