@@ -1,3 +1,10 @@
+# PLEASE NOTICE
+
+**Major new features and improvements will be committed soon. I highly recommend you to wait until then for testing as one of the new features is a tear down button to revert all changes.**
+
+---
+
+
 # Gemini CLI Telemetry - Automated Deployment Application
 
 A production-ready local web application for deploying a complete ELT (Extract, Load, Transform) pipeline that captures Gemini CLI telemetry data and streams it to Google Cloud BigQuery for advanced analytics.
